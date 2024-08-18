@@ -1,0 +1,19 @@
+[
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "查询天气",
+            "parameters": {
+                "type":"object",
+                "properties": {
+                    "city": {
+                        "type": "string",
+                        "description": "城市名称（必须为汉字）"
+                    }
+                },
+                "required": ["city"]
+            }
+        }
+    }
+]

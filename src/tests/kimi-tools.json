@@ -1,0 +1,38 @@
+[
+    {
+        "type": "function",
+        "function": {
+            "name": "search",
+            "description": "通过搜索引擎搜索互联网上的内容。",
+            "type": "object",
+            "required": [
+                "query"
+            ],
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "用户搜索的内容，请从用户的提问或聊天上下文中提取。"
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "crawl",
+            "description": "根据网站地址（URL）获取网页内容",
+            "parameters": {
+                "type": "object",
+                "required": [
+                    "url"
+                ],
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "需要获取内容的网站地址（URL），通常情况下从搜索结果中可以获取网站的地址。"
+                    }
+                }
+            }
+        }
+    }
+]

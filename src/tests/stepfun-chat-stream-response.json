@@ -1,0 +1,31 @@
+{
+    "id": "703d1a2ff38eaa2f18816cc976c78a06.61dabf4f038168f9d7dadd64e8669e8e",
+    "object": "chat.completion.chunk",
+    "created": 1723968260,
+    "model": "step-1-8k",
+    "choices": [
+        {
+            "index": 0,
+            "delta": {
+                "role": "",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "",
+                        "type": "",
+                        "function": {
+                            "name": "",
+                            "arguments": "\":"
+                        }
+                    }
+                ]
+            }
+        }
+    ],
+    "usage": {
+        "cached_tokens": 48,
+        "prompt_tokens": 55,
+        "completion_tokens": 18,
+        "total_tokens": 73
+    }
+}
