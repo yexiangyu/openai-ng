@@ -1,11 +1,22 @@
-use std::collections::HashMap;
-
+use crate::client::Client;
 use crate::error::*;
+use crate::proto::tool::*;
 
 use base64::Engine;
+use futures::StreamExt;
+use http::{
+    header::{self, HeaderValue},
+    Method,
+};
+use reqwest::Body;
+use serde_with::skip_serializing_none;
 use smart_default::SmartDefault;
+use tokio::sync::mpsc::Receiver;
 use tracing::*;
 
+use std::time::Duration;
+
+#[skip_serializing_none]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, SmartDefault)]
 pub struct ChatCompletionRequest {
     pub model: String,
@@ -22,6 +33,161 @@ pub struct ChatCompletionRequest {
     pub response_format: Option<ResponseFormat>,
 }
 
+pub enum ChatCompletionResult {
+    Response(ChatCompletionResponse),
+    Delta(Receiver<Result<ChatCompletionStreamData>>),
+}
+
+impl ChatCompletionRequest {
+    pub async fn call_once(
+        &self,
+        client: &Client,
+        timeout: Option<Duration>,
+    ) -> Result<ChatCompletionResponse> {
+        let uri = "chat/completions";
+
+        let rep = client
+            .call_impl(
+                Method::POST,
+                uri,
+                vec![(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_str("application/json")?,
+                )],
+                Some(Body::from(serde_json::to_vec(&self)?)),
+                None,
+                timeout,
+            )
+            .await?;
+
+        let status = rep.status();
+
+        let rep = serde_json::from_slice::<serde_json::Value>(rep.bytes().await?.as_ref())?;
+
+        for l in serde_json::to_string_pretty(&rep)?.split("\n") {
+            if status.is_success() {
+                tracing::trace!("REP: {}", l);
+            } else {
+                tracing::error!("REP: {}", l);
+            }
+        }
+
+        if status.is_success() {
+            let rep: ChatCompletionResponse = serde_json::from_value(rep)?;
+            Ok(rep)
+        } else {
+            error!("chat completion failed");
+            Err(Error::ApiError(status.as_u16()))
+        }
+    }
+
+    pub async fn call_stream(
+        &self,
+        client: &Client,
+        timeout: Option<Duration>,
+    ) -> Result<Receiver<Result<ChatCompletionStreamData>>> {
+        let uri = "chat/completions";
+
+        let rep = client
+            .call_impl(
+                Method::POST,
+                uri,
+                vec![(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_str("application/json")?,
+                )],
+                Some(Body::from(serde_json::to_vec(&self)?)),
+                None,
+                timeout,
+            )
+            .await?;
+
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+
+        tokio::spawn(async move {
+            let mut stack = vec![];
+            let mut stream = rep.bytes_stream();
+
+            let s_tag = "data: ".as_bytes();
+            let s_tag_len = s_tag.len();
+            let e_tag = "\n\n".as_bytes();
+            let e_tag_len = e_tag.len();
+
+            while let Some(r) = stream.next().await {
+                let chunk = match r {
+                    Ok(r) => r,
+                    Err(e) => {
+                        error!("stream return with error: {:?}", e);
+                        break;
+                    }
+                };
+
+                trace!("recv chunk {} bytes", chunk.len());
+
+                for b in chunk.as_ref() {
+                    stack.push(*b);
+                    if stack.len() >= e_tag_len + s_tag_len {
+                        let slice = &stack[stack.len() - e_tag_len..];
+
+                        if slice == e_tag {
+                            let mut data = vec![];
+                            std::mem::swap(&mut data, &mut stack);
+
+                            let data =
+                                String::from_utf8_lossy(&data[s_tag_len..data.len() - e_tag_len]);
+
+                            if data.find("[DONE]").is_some() {
+                                trace!("met [DONE], data={}", data);
+                                continue;
+                            }
+
+                            match serde_json::from_str::<ChatCompletionStreamData>(&data) {
+                                Err(e) => {
+                                    error!("failed to parse data: error={:?}, data={}", e, data);
+                                    tx.send(Err(e.into())).await.map_err(|_| {
+                                        error!("failed to send error message to chat receiver");
+                                        Error::SendMessage
+                                    })?;
+                                }
+                                Ok(data) => {
+                                    trace!("found data event from stream");
+                                    for l in serde_json::to_string_pretty(&data)?.lines() {
+                                        trace!("DATA: {}", l);
+                                    }
+                                    tx.send(Ok(data)).await.map_err(|_| {
+                                        error!("failed to send data message to chat receiver");
+                                        Error::SendMessage
+                                    })?;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            trace!("stream thread quit, with stack.len()={}", stack.len());
+            Result::Ok(())
+        });
+
+        Ok(rx)
+    }
+
+    pub async fn call(
+        &self,
+        client: &crate::client::Client,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<ChatCompletionResult> {
+        match self.stream {
+            Some(true) => Ok(ChatCompletionResult::Delta(
+                self.call_stream(client, timeout).await?,
+            )),
+            _ => Ok(ChatCompletionResult::Response(
+                self.call_once(client, timeout).await?,
+            )),
+        }
+    }
+}
+
+#[skip_serializing_none]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ResponseFormat {
     #[serde(rename = "type")]
@@ -173,6 +339,7 @@ impl ChatCompletionRequest {
     }
 }
 
+#[skip_serializing_none]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, SmartDefault)]
 pub struct ChatCompletionResponse {
     pub id: String,
@@ -187,7 +354,6 @@ pub struct ChatCompletionResponse {
 
 impl ChatCompletionResponse {
     pub fn merge_delta(&mut self, delta: ChatCompletionStreamData) {
-        info!("merging delta: {:?}", delta);
         let ChatCompletionStreamData {
             id,
             object,
@@ -267,8 +433,10 @@ impl ChatCompletionResponse {
                             .iter_mut()
                             .zip(tool_calls)
                             .for_each(|(lhs, rhs)| {
-                                if rhs.function.name.is_none() {
-                                    lhs.function.name = rhs.function.name.clone();
+                                if let Some(name) = rhs.function.name.as_ref() {
+                                    if !name.is_empty() {
+                                        lhs.function.name = Some(name.clone());
+                                    }
                                 }
 
                                 match (&mut lhs.function.arguments, &rhs.function.arguments) {
@@ -305,6 +473,7 @@ impl ChatCompletionResponse {
     }
 }
 
+#[skip_serializing_none]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Choice {
     pub index: usize,
@@ -312,6 +481,7 @@ pub struct Choice {
     pub finish_reason: Option<String>,
 }
 
+#[skip_serializing_none]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum Stop {
     Text(String),
@@ -338,6 +508,7 @@ impl Stop {
     }
 }
 
+#[skip_serializing_none]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, SmartDefault)]
 pub struct ChatComplitionUsage {
     pub cached_tokens: Option<u64>,
@@ -346,6 +517,7 @@ pub struct ChatComplitionUsage {
     pub total_tokens: u64,
 }
 
+#[skip_serializing_none]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, SmartDefault)]
 pub struct Message {
     #[serde(default, deserialize_with = "empty_string_as_none")]
@@ -436,6 +608,7 @@ impl MessageBuilder {
     }
 }
 
+#[skip_serializing_none]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[allow(non_camel_case_types)]
 pub enum Role {
@@ -445,6 +618,7 @@ pub enum Role {
     tool,
 }
 
+#[skip_serializing_none]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 pub enum Content {
@@ -513,6 +687,7 @@ impl Content {
     }
 }
 
+#[skip_serializing_none]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 pub enum ContentContainer {
@@ -528,6 +703,7 @@ pub enum ContentContainer {
     },
 }
 
+#[skip_serializing_none]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ImageUrl {
     pub url: String,
@@ -560,275 +736,7 @@ impl ImageUrl {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ToolCall {
-    pub id: Option<String>,
-    #[serde(rename = "type")]
-    pub typ: Option<String>,
-    pub function: Function,
-}
-
-impl From<Function> for ToolCall {
-    fn from(f: Function) -> Self {
-        ToolCall {
-            id: None,
-            typ: Some("function".to_string()),
-            function: f,
-        }
-    }
-}
-
-impl ToolCall {
-    pub fn builder() -> ToolCallBuilder {
-        ToolCallBuilder::default()
-    }
-}
-
-#[derive(Debug, Clone, SmartDefault)]
-pub struct ToolCallBuilder {
-    pub id: Option<String>,
-    #[default(Some("function".to_string()))]
-    typ: Option<String>,
-    function: Option<Function>,
-}
-
-impl ToolCallBuilder {
-    pub fn with_function(mut self, function: impl Into<Function>) -> Self {
-        self.function = Some(function.into());
-        self
-    }
-
-    pub fn build(self) -> Result<ToolCall> {
-        let Self { id, typ, function } = self;
-        let typ = typ.ok_or(Error::ToolCallBuild)?;
-        let function = function.ok_or(Error::ToolCallBuild)?;
-        Ok(ToolCall {
-            id,
-            typ: Some(typ),
-            function,
-        })
-    }
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct Function {
-    pub name: Option<String>,
-    pub description: Option<String>,
-    pub parameters: Option<Parameters>,
-    pub arguments: Option<String>,
-}
-
-pub mod serde_value {
-
-    use serde::de::{self, Deserialize, DeserializeOwned, Deserializer};
-    use serde::ser::{self, Serialize, Serializer};
-    use serde_json;
-
-    pub fn serialize<T, S>(value: &T, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        T: Serialize,
-        S: Serializer,
-    {
-        let j = serde_json::to_string(value).map_err(ser::Error::custom)?;
-        j.serialize(serializer)
-    }
-
-    pub fn deserialize<'de, T, D>(deserializer: D) -> Result<T, D::Error>
-    where
-        T: DeserializeOwned,
-        D: Deserializer<'de>,
-    {
-        let j = String::deserialize(deserializer)?;
-        serde_json::from_str(&j).map_err(de::Error::custom)
-    }
-}
-
-impl Function {
-    pub fn builder() -> FunctionBuilder {
-        FunctionBuilder::default()
-    }
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, SmartDefault)]
-pub struct FunctionBuilder {
-    pub name: Option<String>,
-    pub description: Option<String>,
-    pub parameters: Option<Parameters>,
-    pub arguments: Option<String>,
-}
-
-impl FunctionBuilder {
-    pub fn with_name(mut self, name: impl Into<String>) -> Self {
-        self.name = Some(name.into());
-        self
-    }
-
-    pub fn with_description(mut self, description: impl Into<String>) -> Self {
-        self.description = Some(description.into());
-        self
-    }
-
-    pub fn with_parameters(mut self, parameters: Parameters) -> Self {
-        self.parameters = Some(parameters);
-        self
-    }
-
-    pub fn build(self) -> Result<Function> {
-        let Self {
-            name,
-            description,
-            parameters,
-            arguments,
-        } = self;
-
-        let name = name.ok_or(Error::ToolCallFunctionBuild)?;
-
-        Ok(Function {
-            name: Some(name),
-            description,
-            parameters,
-            arguments,
-        })
-    }
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[allow(non_camel_case_types)]
-#[serde(untagged)]
-pub enum Argument {
-    string(String),
-    number(f64),
-    integer(i64),
-    boolean(bool),
-    array(Vec<Argument>),
-    object(HashMap<String, Argument>),
-}
-
-macro_rules! impl_argument_as_value {
-    ($fun: ident, $i: ident, $typ: ty) => {
-        impl Argument {
-            pub fn $fun(&self) -> Option<&$typ> {
-                match self {
-                    Self::$i(inner) => Some(&inner),
-                    _ => None,
-                }
-            }
-        }
-    };
-}
-
-impl_argument_as_value!(as_string, string, String);
-impl_argument_as_value!(as_number, number, f64);
-impl_argument_as_value!(as_integer, integer, i64);
-impl_argument_as_value!(as_boolean, boolean, bool);
-impl_argument_as_value!(as_array, array, Vec<Argument>);
-impl_argument_as_value!(as_object, object, HashMap<String, Argument>);
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct Parameters {
-    #[serde(rename = "type")]
-    pub typ: String,
-    pub properties: HashMap<String, ParameterProperty>,
-    #[serde(default)]
-    pub required: Vec<String>,
-}
-
-impl Parameters {
-    pub fn builder() -> ParametersBuilder {
-        ParametersBuilder::default()
-    }
-}
-
-#[derive(Debug, Clone, SmartDefault)]
-pub struct ParametersBuilder {
-    #[default(Some("object".to_string()))]
-    typ: Option<String>,
-    properties: HashMap<String, ParameterProperty>,
-    required: Vec<String>,
-}
-
-impl ParametersBuilder {
-    pub fn add_property(mut self, name: impl Into<String>, property: ParameterProperty) -> Self {
-        self.properties.insert(name.into(), property);
-        self
-    }
-
-    pub fn add_required(mut self, name: impl Into<String>) -> Self {
-        self.required.push(name.into());
-        self
-    }
-
-    pub fn build(self) -> Result<Parameters> {
-        let Self {
-            typ,
-            properties,
-            required,
-        } = self;
-
-        let typ = typ.ok_or(Error::ToolCallParametersBuild)?;
-
-        Ok(Parameters {
-            typ,
-            properties,
-            required,
-        })
-    }
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ParameterProperty {
-    #[serde(rename = "type")]
-    pub typ: Option<ParameterType>,
-    pub description: String,
-}
-
-impl ParameterProperty {
-    pub fn builder() -> ParameterPropertyBuilder {
-        ParameterPropertyBuilder::default()
-    }
-}
-
-#[derive(Debug, Clone, SmartDefault)]
-pub struct ParameterPropertyBuilder {
-    typ: Option<ParameterType>,
-    description: Option<String>,
-}
-
-impl ParameterPropertyBuilder {
-    pub fn with_type(mut self, typ: ParameterType) -> Self {
-        self.typ = Some(typ);
-        self
-    }
-
-    pub fn with_description(mut self, description: impl Into<String>) -> Self {
-        self.description = Some(description.into());
-        self
-    }
-
-    pub fn build(self) -> Result<ParameterProperty> {
-        let Self { typ, description } = self;
-
-        let typ = typ.ok_or(Error::ToolCallParametersBuild)?;
-        let description = description.ok_or(Error::ToolCallParametersBuild)?;
-
-        Ok(ParameterProperty {
-            typ: Some(typ),
-            description,
-        })
-    }
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[allow(non_camel_case_types)]
-pub enum ParameterType {
-    string,
-    number,
-    integer,
-    boolean,
-    array,
-    object,
-}
-
+#[skip_serializing_none]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ChatCompletionStreamData {
     pub id: Option<String>,
@@ -839,6 +747,7 @@ pub struct ChatCompletionStreamData {
     pub usage: Option<ChatComplitionUsage>,
 }
 
+#[skip_serializing_none]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StreamChoice {
     pub index: usize,
@@ -848,36 +757,80 @@ pub struct StreamChoice {
 }
 
 #[cfg(test)]
-#[test]
-fn test_message_ok() -> anyhow::Result<()> {
-    let _ = dotenv::from_filename(".env.stepfun")?;
+#[tokio::test]
+async fn test_chat_simple_ok() -> Result<()> {
+    let client = Client::from_env_file(".env.kimi")?;
     let _ = tracing_subscriber::fmt::try_init();
 
-    let req: ChatCompletionRequest =
-        serde_json::from_str(&crate::tests::STEPFUN_CHAT_COMPLETION_REQUEST_JSON)?;
+    let model_name = std::env::var("OPENAI_API_MODEL_NAME")?;
+    let use_stream = std::env::var("USE_STREAM").is_ok();
 
-    for l in serde_json::to_string_pretty(&req)?.lines() {
-        tracing::info!("REQ: {}", l);
-    }
+    let messages = vec![
+        Message::builder()
+            .with_role(Role::system)
+            .with_content("你是一个大模型")
+            .build(),
+        Message::builder()
+            .with_role(Role::user)
+            .with_content("计算 1921.23 + 42.00")
+            .build(),
+    ];
 
-    let tools: Vec<ToolCall> =
-        serde_json::from_str(&crate::tests::STEPFUN_CHAT_TOOLS_REQUEST_JSON)?;
+    let fn_add_number = Function::builder()
+        .with_name("fn_add_number")
+        .with_description("将两个数字相加, 这两个数字都是浮点数")
+        .with_parameters(
+            Parameters::builder()
+                .add_property(
+                    "a",
+                    ParameterProperty::builder()
+                        .with_description("加数")
+                        .with_type(ParameterType::number)
+                        .build()?,
+                )
+                .add_required("a")
+                .add_property(
+                    "b",
+                    ParameterProperty::builder()
+                        .with_description("加数")
+                        .with_type(ParameterType::number)
+                        .build()?,
+                )
+                .add_required("b")
+                .build()?,
+        )
+        .build()?;
 
-    for l in serde_json::to_string_pretty(&tools)?.lines() {
-        tracing::info!("TOOLS: {}", l);
-    }
+    let res = ChatCompletionRequest::builder()
+        .with_model(model_name)
+        .with_messages(messages)
+        .with_stream(use_stream)
+        .add_tool(fn_add_number)
+        .build()?
+        .call(&client, None)
+        .await?;
 
-    let rep: ChatCompletionResponse =
-        serde_json::from_str(&crate::tests::STEPFUN_CHAT_TOOLS_RESPONSE_JSON)?;
+    let rep = match res {
+        ChatCompletionResult::Response(rep) => rep,
+        ChatCompletionResult::Delta(mut rx) => {
+            let mut rep_total = ChatCompletionResponse::default();
+            while let Some(res) = rx.recv().await {
+                match res {
+                    Ok(rep) => {
+                        rep_total.merge_delta(rep);
+                    }
+                    Err(e) => {
+                        error!("failed to recv rep: {:?}", e);
+                        break;
+                    }
+                }
+            }
+            rep_total
+        }
+    };
 
     for l in serde_json::to_string_pretty(&rep)?.lines() {
-        tracing::info!("TOOLS RESPONSE: {}", l);
-    }
-
-    let tools: Vec<ToolCall> = serde_json::from_str(&crate::tests::KIMI_CHAT_TOOL_JSON)?;
-
-    for l in serde_json::to_string_pretty(&tools)?.lines() {
-        tracing::info!("KIMI TOOLS RESPONSE: {}", l);
+        info!("FINAL REP: {}", l);
     }
 
     Ok(())

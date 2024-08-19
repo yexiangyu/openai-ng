@@ -1,4 +1,11 @@
+use std::time::Duration;
+
 use crate::error::*;
+use http::{
+    header::{self, HeaderValue},
+    Method,
+};
+use reqwest::Body;
 use smart_default::SmartDefault;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, SmartDefault)]
@@ -16,6 +23,46 @@ pub struct GenerationRequest {
 impl GenerationRequest {
     pub fn builder() -> GenerationRequestBuilder {
         GenerationRequestBuilder::default()
+    }
+
+    pub async fn call(
+        &self,
+        client: &crate::client::Client,
+        timeout: Option<Duration>,
+    ) -> Result<GenerationResponse> {
+        let uri = "images/generations";
+
+        let rep = client
+            .call_impl(
+                Method::POST,
+                uri,
+                vec![(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_str("application/json")?,
+                )],
+                Some(Body::from(serde_json::to_string(&self)?)),
+                None,
+                timeout,
+            )
+            .await?;
+
+        let status = rep.status();
+
+        let rep = serde_json::from_slice::<serde_json::Value>(rep.bytes().await?.as_ref())?;
+
+        for l in serde_json::to_string_pretty(&rep)?.lines() {
+            if status.is_client_error() || status.is_server_error() {
+                tracing::error!("REP: {}", l);
+            } else {
+                tracing::trace!("REP: {}", l);
+            }
+        }
+
+        if !status.is_success() {
+            return Err(Error::ApiError(status.as_u16()));
+        }
+
+        Ok(serde_json::from_value(rep)?)
     }
 }
 
@@ -116,4 +163,28 @@ pub struct GenerationData {
 pub enum GenerationFormat {
     b64_json,
     url,
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn test_genai_ok() -> Result<()> {
+    use crate::client::Client;
+
+    let client = Client::from_env_file(".env.stepfun.genai")?;
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let model_name = std::env::var("OPENAI_API_MODEL_NAME")?;
+
+    let res = GenerationRequest::builder()
+        .with_prompt("Sweet and Sour Mandarin Fish, a chinese traitional dish.")
+        .with_model(model_name)
+        .build()?
+        .call(&client, None)
+        .await?;
+
+    for data in serde_json::to_string_pretty(&res)?.lines() {
+        tracing::info!("REP: {}", data);
+    }
+
+    Ok(())
 }

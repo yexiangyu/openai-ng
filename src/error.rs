@@ -29,6 +29,8 @@ pub enum Error {
     SendMessage,
     #[error("read or write file {0}")]
     Io(#[from] std::io::Error),
+    #[error("no file name")]
+    NoFileName,
     #[error("no file extension found")]
     NoFileExtension,
     #[error("failed to join async task")]
@@ -43,6 +45,10 @@ pub enum Error {
     GenerationRequestBuild,
     #[error("api server error code={0}")]
     ApiError(u16),
+    #[error("failed to build file request")]
+    FileRequestBuild,
+    #[error("failed to find env var")]
+    Var(#[from] std::env::VarError),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
