@@ -6,6 +6,9 @@ name = "openai-ng"
 version = "0.1.0"
 categories = ["api-bindings"]
 description = "openai sdk for rust and tokio, for personal"
+homepage = "https://github.com/yexiangyu/openai-ng"
+documentation = "https://docs.rs/openai-ng"
+
 
 [dependencies]
 anyhow = "1.0.86"
