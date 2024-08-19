@@ -17,7 +17,7 @@ OpenAI compatible api sdk for `rust` and `tokio`, with lot's of `builder`.
 ## Getting started
 
 ```rust
-use openai::prelude::*;
+use openai_ng::prelude::*;
 
 // all api call should be run in `tokio` runtime
 #[tokio::main]
