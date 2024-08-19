@@ -2,6 +2,8 @@
 
 OpenAI compatible api sdk for `rust` and `tokio`, with lot's of `builder`.
 
+‼️ don't use it for important project! ‼️
+
 ## Tested LLM API Service
 
 | LLM Vendor | Chat | Chat Stream | File | Image Generation |
