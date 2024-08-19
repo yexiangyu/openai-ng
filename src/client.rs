@@ -157,7 +157,7 @@ impl Client {
         req: GenerationRequest,
         timeout: Option<Duration>,
     ) -> Result<GenerationResponse> {
-        req.call(&self, timeout).await
+        req.call(self, timeout).await
     }
 
     pub async fn chat_completion_stream(
@@ -166,7 +166,7 @@ impl Client {
         timeout: Option<Duration>,
     ) -> Result<Receiver<Result<ChatCompletionStreamData>>> {
         req.stream = Some(true);
-        req.call_stream(&self, timeout).await
+        req.call_stream(self, timeout).await
     }
 
     pub async fn chat_completion(
@@ -175,6 +175,6 @@ impl Client {
         timeout: Option<Duration>,
     ) -> Result<ChatCompletionResponse> {
         req.stream = Some(false);
-        req.call_once(&self, timeout).await
+        req.call_once(self, timeout).await
     }
 }

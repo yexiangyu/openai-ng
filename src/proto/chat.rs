@@ -9,6 +9,7 @@ use http::{
     Method,
 };
 use reqwest::Body;
+use serde::de::{Deserialize, IntoDeserializer};
 use serde_with::skip_serializing_none;
 use smart_default::SmartDefault;
 use tokio::sync::mpsc::Receiver;
@@ -280,7 +281,7 @@ impl ChatCompletionRequestBuilder {
         std::mem::swap(&mut self.stop, &mut lhs);
         self.stop = match lhs {
             None => Some(rhs),
-            Some(lhs) => Some(lhs.add(rhs)),
+            Some(lhs) => Some(lhs.append(rhs)),
         };
         self
     }
@@ -489,7 +490,7 @@ pub enum Stop {
 }
 
 impl Stop {
-    pub fn add(self, rhs: Stop) -> Self {
+    pub fn append(self, rhs: Stop) -> Self {
         match (self, rhs) {
             (Stop::Text(lhs), Stop::Text(rhs)) => Stop::Texts(vec![lhs, rhs]),
             (Stop::Text(lhs), Stop::Texts(mut rhs)) => {
@@ -532,10 +533,8 @@ fn empty_string_as_none<'de, D>(de: D) -> std::result::Result<Option<Role>, D::E
 where
     D: serde::Deserializer<'de>,
 {
-    use serde::de::{Deserialize, IntoDeserializer};
     let opt = Option::<String>::deserialize(de)?;
-    let opt = opt.as_ref().map(String::as_str);
-    match opt {
+    match opt.as_deref() {
         None | Some("") => Ok(None),
         Some(s) => Role::deserialize(s.into_deserializer()).map(Some),
     }

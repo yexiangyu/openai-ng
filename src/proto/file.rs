@@ -258,8 +258,7 @@ impl FileUploadRequest {
                 let file = tokio::fs::File::open(local_path).await?;
                 let stream = FramedRead::new(file, BytesCodec::new());
                 let file_body = Body::wrap_stream(stream);
-                let some_file = Part::stream(file_body).file_name(file_name);
-                some_file
+                Part::stream(file_body).file_name(file_name)
             }
             FileSource::Remote {
                 url,
@@ -281,10 +280,7 @@ impl FileUploadRequest {
                     .await?;
 
                 let bytes = rep.bytes().await?;
-
-                let some_file = Part::stream(bytes).file_name(filename);
-
-                some_file
+                Part::stream(bytes).file_name(filename)
             }
         };
 

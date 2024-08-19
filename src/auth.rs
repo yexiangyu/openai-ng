@@ -1,34 +1,28 @@
-use async_trait::async_trait;
-use reqwest::Request;
 use crate::error::*;
-use http::header::{self, HeaderName, HeaderValue};
+use async_trait::async_trait;
+use http::header::{self, HeaderValue};
+use reqwest::Request;
 use tracing::*;
 
 #[async_trait]
-pub trait AuthenticatorTrait
-{
+pub trait AuthenticatorTrait {
     async fn authorize(&self, req: &mut Request) -> Result<()>;
 }
 
 #[derive(Debug, Clone)]
-pub struct Bearer
-{
+pub struct Bearer {
     key: String,
 }
 
-impl Bearer
-{
-    pub fn new(key: String) -> Self
-    {
+impl Bearer {
+    pub fn new(key: String) -> Self {
         Self { key }
     }
 }
 
 #[async_trait]
-impl AuthenticatorTrait for Bearer
-{
-    async fn authorize(&self, req: &mut Request) -> Result<()>
-    {
+impl AuthenticatorTrait for Bearer {
+    async fn authorize(&self, req: &mut Request) -> Result<()> {
         let k = header::AUTHORIZATION;
         let v = HeaderValue::from_str(&format!("Bearer {}", self.key))?;
         if let Some(k) = req.headers_mut().insert(k, v) {
