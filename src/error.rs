@@ -1,33 +1,31 @@
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("message builder without role")]
-    MessageBuilderMissRole,
-    #[error("message builder without messages")]
-    MessageBuilderMissMessages,
+    /// failed to build message
+    #[error("message build fail")]
+    MessageBuild,
+    /// failed to build chat request
     #[error("json encode/decode fail: {0}")]
-    JsonDecode(#[from] serde_json::Error),
+    Json(#[from] serde_json::Error),
+    /// invalid header value
     #[error("build header value error: {0}")]
     HeaderValue(#[from] http::header::InvalidHeaderValue),
+    /// failed parse url string
     #[error("parse url string: {0}")]
     UrlParse(#[from] url::ParseError),
-    #[error("client builder without base url")]
-    ClientBuilderMissBaseUrl,
-    #[error("client builder without authenticator")]
-    ClientBuilderMissAuthenticator,
+    #[error("client build fail")]
+    ClientBuild,
     #[error("client failed to build request")]
-    ClientBuildRequest(#[from] reqwest::Error),
+    RequestBuild(#[from] reqwest::Error),
     #[cfg(feature = "opencv")]
     #[error("failed to process image with opencv: {0}")]
     Opencv(#[from] opencv::Error),
     #[error("chat completion builder without model")]
-    ChatCompletionsRequestBuilderMissModel,
-    #[error("chat completion builder without message")]
-    ChatCompletionsRequestBuilderMissMessages,
+    ChatCompletionRequestBuild,
     #[error("failed to decode utf-8: {0}")]
     Utf8(#[from] std::string::FromUtf8Error),
     #[error("failed to send message to chat reciever")]
     SendMessage,
-    #[error("read or write file {0}")]
+    #[error("io {0}")]
     Io(#[from] std::io::Error),
     #[error("no file name")]
     NoFileName,

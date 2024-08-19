@@ -4,17 +4,20 @@ use http::header::{self, HeaderValue};
 use reqwest::Request;
 use tracing::*;
 
+/// trait to authorize `reqwest::Request`, might add more authorization method in the future
 #[async_trait]
 pub trait AuthenticatorTrait {
     async fn authorize(&self, req: &mut Request) -> Result<()>;
 }
 
+/// Bearer token authorization
 #[derive(Debug, Clone)]
 pub struct Bearer {
     key: String,
 }
 
 impl Bearer {
+    /// create a new Bearer token authorization
     pub fn new(key: String) -> Self {
         Self { key }
     }

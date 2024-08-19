@@ -195,13 +195,17 @@ pub struct ParametersBuilder {
 }
 
 impl ParametersBuilder {
-    pub fn add_property(mut self, name: impl Into<String>, property: ParameterProperty) -> Self {
-        self.properties.insert(name.into(), property);
-        self
-    }
-
-    pub fn add_required(mut self, name: impl Into<String>) -> Self {
-        self.required.push(name.into());
+    pub fn add_property(
+        mut self,
+        name: impl Into<String>,
+        property: ParameterProperty,
+        required: bool,
+    ) -> Self {
+        let name = name.into();
+        self.properties.insert(name.clone(), property);
+        if required {
+            self.required.push(name);
+        }
         self
     }
 

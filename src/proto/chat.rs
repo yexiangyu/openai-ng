@@ -227,8 +227,8 @@ impl ChatCompletionRequestBuilder {
         self
     }
 
-    pub fn with_messages(mut self, messages: Vec<Message>) -> Self {
-        self.messages = messages;
+    pub fn with_messages(mut self, messages: impl IntoIterator<Item = Message>) -> Self {
+        self.messages.extend(messages);
         self
     }
 
@@ -242,8 +242,11 @@ impl ChatCompletionRequestBuilder {
         self
     }
 
-    pub fn with_tools(mut self, tools: Vec<ToolCall>) -> Self {
-        self.tools = tools;
+    pub fn with_tools<T>(mut self, tools: impl IntoIterator<Item = T>) -> Self
+    where
+        T: Into<ToolCall>,
+    {
+        self.tools.extend(tools.into_iter().map(|t| t.into()));
         self
     }
 
@@ -306,10 +309,10 @@ impl ChatCompletionRequestBuilder {
             response_format,
         } = self;
 
-        let model = model.ok_or(Error::ChatCompletionsRequestBuilderMissModel)?;
+        let model = model.ok_or(Error::ChatCompletionRequestBuild)?;
 
         if messages.is_empty() {
-            return Err(Error::ChatCompletionsRequestBuilderMissMessages);
+            return Err(Error::ChatCompletionRequestBuild);
         }
 
         let r = ChatCompletionRequest {
@@ -755,59 +758,139 @@ pub struct StreamChoice {
     pub usage: Option<ChatComplitionUsage>,
 }
 
+#[allow(dead_code)]
+#[cfg(test)]
+async fn example_code() -> Result<()> {
+    // build a client
+    let client = Client::builder()
+        .with_base_url("https://api.stepfun.com")?
+        .with_key("you api key")?
+        .with_version("v1")?
+        .build()?;
+
+    // build a request
+    let req = ChatCompletionRequest::builder()
+        .with_model("step-1-8k")
+        .with_messages([
+            Message::builder()
+                .with_role(Role::system)
+                .with_content("you are a good llm model")
+                .build(),
+            Message::builder()
+                .with_role(Role::user)
+                .with_content("calculate 1921.23 + 42.00")
+                .build(),
+        ])
+        .with_tools([Function::builder()
+            .with_name("add_number")
+            .with_description("add two numbers")
+            .with_parameters(
+                Parameters::builder()
+                    .add_property(
+                        "a",
+                        ParameterProperty::builder()
+                            .with_description("number 1 in 2 numbers")
+                            .with_type(ParameterType::number)
+                            .build()?,
+                        true,
+                    )
+                    .add_property(
+                        "b",
+                        ParameterProperty::builder()
+                            .with_description("number 2 in 2 numbers")
+                            .with_type(ParameterType::number)
+                            .build()?,
+                        true,
+                    )
+                    .build()?,
+            )
+            .build()?])
+        .with_stream(false) // if true, the response will be a stream
+        .build()?;
+
+    // call request
+    let res = req.call(&client, None).await?;
+
+    // base on with_stream, the rep will be different
+    let rep = match res {
+        // will return result at once
+        ChatCompletionResult::Response(rep) => rep,
+        // will return a async receiver of ChatCompletionStreamData
+        ChatCompletionResult::Delta(mut rx) => {
+            let mut rep_total = ChatCompletionResponse::default();
+            while let Some(res) = rx.recv().await {
+                match res {
+                    Ok(rep) => {
+                        rep_total.merge_delta(rep);
+                    }
+                    Err(e) => {
+                        error!("failed to recv rep: {:?}", e);
+                        break;
+                    }
+                }
+            }
+            rep_total
+        }
+    };
+
+    // log and print result
+    for l in serde_json::to_string_pretty(&rep)?.lines() {
+        info!("FINAL REP: {}", l);
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 #[tokio::test]
 async fn test_chat_simple_ok() -> Result<()> {
-    let client = Client::from_env_file(".env.kimi")?;
-    let _ = tracing_subscriber::fmt::try_init();
+    let client = Client::from_env_file(".env.stepfun")?;
 
     let model_name = std::env::var("OPENAI_API_MODEL_NAME")?;
     let use_stream = std::env::var("USE_STREAM").is_ok();
 
-    let messages = vec![
-        Message::builder()
-            .with_role(Role::system)
-            .with_content("你是一个大模型")
-            .build(),
-        Message::builder()
-            .with_role(Role::user)
-            .with_content("计算 1921.23 + 42.00")
-            .build(),
-    ];
+    let _ = tracing_subscriber::fmt::try_init();
 
-    let fn_add_number = Function::builder()
-        .with_name("fn_add_number")
-        .with_description("将两个数字相加, 这两个数字都是浮点数")
-        .with_parameters(
-            Parameters::builder()
-                .add_property(
-                    "a",
-                    ParameterProperty::builder()
-                        .with_description("加数")
-                        .with_type(ParameterType::number)
-                        .build()?,
-                )
-                .add_required("a")
-                .add_property(
-                    "b",
-                    ParameterProperty::builder()
-                        .with_description("加数")
-                        .with_type(ParameterType::number)
-                        .build()?,
-                )
-                .add_required("b")
-                .build()?,
-        )
+    let req = ChatCompletionRequest::builder()
+        .with_model("step-1-8k")
+        .with_messages([
+            Message::builder()
+                .with_role(Role::system)
+                .with_content("you are a good llm model")
+                .build(),
+            Message::builder()
+                .with_role(Role::user)
+                .with_content("calculate 1921.23 + 42.00")
+                .build(),
+        ])
+        .with_tools([Function::builder()
+            .with_name("add_number")
+            .with_description("add two numbers")
+            .with_parameters(
+                Parameters::builder()
+                    .add_property(
+                        "a",
+                        ParameterProperty::builder()
+                            .with_description("number 1 in 2 numbers")
+                            .with_type(ParameterType::number)
+                            .build()?,
+                        true,
+                    )
+                    .add_property(
+                        "b",
+                        ParameterProperty::builder()
+                            .with_description("number 2 in 2 numbers")
+                            .with_type(ParameterType::number)
+                            .build()?,
+                        true,
+                    )
+                    .build()?,
+            )
+            .build()?])
+        .with_stream(false) // if true, the response will be a stream
         .build()?;
 
-    let res = ChatCompletionRequest::builder()
-        .with_model(model_name)
-        .with_messages(messages)
-        .with_stream(use_stream)
-        .add_tool(fn_add_number)
-        .build()?
-        .call(&client, None)
-        .await?;
+    let res = req.call(&client, None).await?;
 
     let rep = match res {
         ChatCompletionResult::Response(rep) => rep,
