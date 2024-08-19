@@ -5,6 +5,7 @@ license = "MIT"
 name = "openai-ng"
 version = "0.1.0"
 categories = ["api-bindings"]
+description = "openai sdk for rust and tokio, for personal"
 
 [dependencies]
 anyhow = "1.0.86"
