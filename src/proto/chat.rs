@@ -652,7 +652,7 @@ impl From<ImageUrl> for Content {
 impl Content {
     pub fn from_image_url(url: &str) -> Self {
         Content::Containers(vec![ContentContainer::Image {
-            typ: "image".into(),
+            typ: "image_url".into(),
             image_url: ImageUrl::from_url(url),
         }])
     }
