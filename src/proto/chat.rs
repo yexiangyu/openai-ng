@@ -731,7 +731,7 @@ pub struct ImageUrl {
 impl From<ImageUrl> for ContentContainer {
     fn from(url: ImageUrl) -> Self {
         ContentContainer::Image {
-            typ: "image".into(),
+            typ: "image_url".into(),
             image_url: url,
         }
     }
