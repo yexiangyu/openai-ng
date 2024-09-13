@@ -417,9 +417,9 @@ impl ChatCompletionResponse {
                     if let Some(delta_content) = content {
                         let mut choice_content = None;
                         std::mem::swap(&mut choice.message.content, &mut choice_content);
-                        choice_content = match choice_content {
-                            Some(c) => Some(c.merge(delta_content)),
-                            None => Some(delta_content),
+                        match choice_content.as_mut() {
+                            Some(c) => c.merge(delta_content),
+                            None => choice_content = Some(delta_content),
                         };
                         std::mem::swap(&mut choice.message.content, &mut choice_content);
                     }
@@ -568,15 +568,15 @@ impl MessageBuilder {
         self
     }
 
-    pub fn add_content(mut self, content: impl Into<Content>) -> Self {
-        let mut lhs = None;
-        std::mem::swap(&mut self.content, &mut lhs);
-        self.content = match lhs {
-            None => Some(content.into()),
-            Some(lhs) => Some(lhs.merge(content)),
-        };
-        self
-    }
+    // pub fn add_content(mut self, content: impl Into<Content>) -> Self {
+    //     let mut lhs = None;
+    //     std::mem::swap(&mut self.content, &mut lhs);
+    //     self.content = match lhs {
+    //         None => Some(content.into()),
+    //         Some(lhs) => Some(lhs.merge(content)),
+    //     };
+    //     self
+    // }
 
     pub fn with_tool_call_id(mut self, tool_call_id: impl Into<String>) -> Self {
         self.tool_call_id = Some(tool_call_id.into());
@@ -661,31 +661,48 @@ impl Content {
         Content::Text(text.into())
     }
 
-    pub fn merge(self, rhs: impl Into<Self>) -> Self {
-        let rhs = rhs.into();
-        let lhs = self;
-        match (lhs, rhs) {
-            (Content::Text(lhs), Content::Text(rhs)) => Content::Text(format!("{}{}", lhs, rhs)),
-            (Content::Containers(mut lhs), Content::Containers(rhs)) => {
-                lhs.extend(rhs);
-                Content::Containers(lhs)
+    pub fn merge(&mut self, rhs: Self) {
+        *self = match self {
+            Content::Text(s0) => match rhs {
+                Content::Text(s1) => {
+                    *s0 += s1.as_str();
+                    return;
+                }
+                Content::Containers(cs) => {
+                    let mut cs_ = vec![s0.clone().into()];
+                    cs_.extend(cs);
+                    Content::Containers(cs_)
+                }
+            },
+            Content::Containers(cs) => {
+                match rhs {
+                    Content::Text(s1) => cs.push(ContentContainer::Text {
+                        typ: "text".into(),
+                        text: s1,
+                    }),
+                    Content::Containers(cs_) => cs.extend(cs_),
+                }
+                return;
             }
-            (Content::Text(lhs), Content::Containers(mut rhs)) => {
-                let mut new = vec![ContentContainer::Text {
+        };
+    }
+
+    pub fn append(&mut self, item: impl Into<ContentContainer>) {
+        *self = match self {
+            Content::Text(s) => Content::Containers(vec![
+                ContentContainer::Text {
                     typ: "text".into(),
-                    text: lhs,
-                }];
-                new.append(&mut rhs);
-                Content::Containers(new)
+                    text: s.clone(),
+                },
+                item.into(),
+            ]),
+            Content::Containers(cs) => {
+                let mut cs_ = vec![];
+                std::mem::swap(cs, &mut cs_);
+                cs_.push(item.into());
+                Content::Containers(cs_)
             }
-            (Content::Containers(mut lhs), Content::Text(rhs)) => {
-                lhs.push(ContentContainer::Text {
-                    typ: "text".into(),
-                    text: rhs,
-                });
-                Content::Containers(lhs)
-            }
-        }
+        };
     }
 }
 
@@ -709,6 +726,24 @@ pub enum ContentContainer {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ImageUrl {
     pub url: String,
+}
+
+impl From<ImageUrl> for ContentContainer {
+    fn from(url: ImageUrl) -> Self {
+        ContentContainer::Image {
+            typ: "image".into(),
+            image_url: url,
+        }
+    }
+}
+
+impl From<String> for ContentContainer {
+    fn from(s: String) -> Self {
+        ContentContainer::Text {
+            typ: "text".into(),
+            text: s,
+        }
+    }
 }
 
 impl ImageUrl {
